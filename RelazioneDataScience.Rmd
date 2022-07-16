@@ -1,0 +1,420 @@
+---
+title: "Energia nucleare, pericolo o opportunità?"
+author: "Oliver Stevanovic"
+date: '2022-07-14'
+output: html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+# Possiamo fare a meno dell'energia nucleare per combattere il cambiamento climatico?
+
+Sempre di più negli ultimi anni si sente parlare di cambiamento
+climatico, a cui non è tuttavia ancora stata trovata una soluzione
+efficacie.
+
+Dalle parole e dalle minacce di esperti che sembravano essere troppo
+pessimisti si è passati ai fatti: dall'inizio dell'estate stiamo
+affrontando una crisi idrica, improvvisi temporali che mettono in
+difficoltà le imprese agricole e non solo.
+
+Scienziati di tutto il mondo si sono resi conto che inevitabilmente
+dovremo fare affidamento all'energia nucleare andando in contrasto con
+una buona percentuale dell'opinione pubblica che ripudia questa fonte di
+energia.
+
+Analizzeremo dati interessanti a nostra disposizione cercando di
+prendere una posizione e farci un'idea a riguardo. I dati sono resi
+disponibili da [Our World in Data](https://github.com/owid/energy-data)
+e raccolgono esaustive informazioni sul consumo di energia nel mondo.
+
+Oltre a questo dataset, per il progetto mi sono servito di altri due
+trovati sul sito internet Kaggle. Entrambi contengono dati presi
+dall'`energyData` che sono risultati comodi perchè già "puliti" e mi
+hanno permesso di risparmiare del tempo per quanto riguarda il data
+*wrangling* e *cleaning*([kaggle
+datasets](https://www.kaggle.com/datasets/donjoeml/energy-consumption-and-generation-in-the-globe)).
+
+```{r, include=TRUE}
+#librerie
+library("ggplot2")
+library("tidyverse")
+library("plotly")
+library("sf")
+library("rnaturalearth")
+library("rnaturalearthdata")
+library("countrycode")
+library("modelr")
+
+energyData <- read.csv("owid-energy-data.csv")
+primaryEnergyConsumption <- read.csv("Primary-energy-consumption-from-fossilfuels-nuclear-renewables.csv")
+shareElecCons <- read.csv("share-energy-consum-by-source.csv")
+
+```
+
+# Domanda di elettricità
+
+Per ridurre le emissioni un nostro grande alleato è l'**elettricità**.
+Grazie all' energia elettrica settori come quello del trasporto
+automobilistico possono essere riconvertiti senza limitarne l'utilizzo.
+
+```{r, include=TRUE}
+
+electricityDemandIncrement <- energyData %>% 
+  select(country, year, fossil_electricity, electricity_demand, 
+         nuclear_electricity, renewables_electricity) %>% 
+  filter(country == "World") %>% 
+  filter(year >= 2000)
+  
+
+electricityPlot =  electricityDemandIncrement %>% 
+  ggplot() + 
+  geom_line(aes(x=year, y=electricity_demand, colour="Domanda di elettricità"), 
+            size = 1.5)+
+  geom_line(aes(x=year, y=fossil_electricity, colour="Combustibili fossili"), 
+            size = 1.5)+
+  geom_line(aes(x=year, y=nuclear_electricity, colour="Nucleare"), size = 1.5)+
+  geom_line(aes(x=year, y=renewables_electricity, colour="Rinnovabili"), 
+            size = 1.5)+
+  xlab("Anno")+
+  ylab("TWh")+
+  theme_minimal()+
+  ggtitle("Domanda di energia elettrica, produzione di elettricita 
+  (combustibili fossili, nucleare, rinnovabili) nel mondo (TWh)")+ 
+  labs(color='Legenda')
+
+electricityPlot
+
+```
+
+Dal grafico notiamo come col passare degli anni sia aumentata
+notevolmente la domanda di energia. Si evince inoltre che con essa
+variano le quantità di energia prodotte. Questo ci permette quindi di
+capire anche in che modo questa domanda viene soddisfatta. I risultati,
+però, non sono quelli che dovrebbero essere: la principale fonte di
+affidamento risultano essere i **combustibili fossili**.
+
+Per averne la conferma, proviamo ad analizzare questa apparente correlazione tra
+domanda di elettricità e produzione di energia con combustibili fossili
+mediante un modello di regressione lineare:
+
+```{r, include=TRUE}
+#pulizia dei dati
+energyDataModel = energyData %>% 
+  select(country, year, electricity_demand, fossil_electricity) %>% 
+  filter(year == 2020) %>% 
+  filter(country!="World") %>% 
+  na.omit(energyDataModel)
+#valutiamo la veridicità della correlazione
+r = cor(energyDataModel$fossil_electricity, energyDataModel$electricity_demand)
+#coefficiente di Pearson
+r^2
+
+mod = lm(electricity_demand ~ fossil_electricity, data = energyDataModel)
+
+summary(mod)
+#aggiunta delle predizioni
+grid = data_grid(energyDataModel, fossil_electricity)
+
+grid = add_predictions(grid, mod)
+
+ggplot(energyDataModel, aes(x = fossil_electricity)) + 
+  geom_point(aes(y = electricity_demand)) + 
+  geom_line(data = grid, mapping = aes(y = pred), colour = "yellow", size = 1)+ 
+  scale_x_log10()+
+  scale_y_log10()+
+  xlab("Prod. energia comb. fossili(Twh)")+
+  ylab("Domanda di elettricità(TWh)")+
+  theme_minimal()+
+  ggtitle("Regressione lineare")
+
+```
+
+Il risultato a cui siamo giunti è molto interessante: notiamo come nei
+casi in cui la richiesta di energia è minore, il nostro grafico a
+dispersione risulta essere più *rarefatto*, simbolo di una
+diversificazione nella produzione di energia. D'altro canto con
+l'aumentare della domanda di energia i punti si *concentrano* sempre di
+più vicino alla linea di predizione. Questo comportamento può essere
+interpretato in vari modi, a mio avviso l'interpretazione più plausibile
+è la seguente: essendo le tecnologie relative a combustibili fossili
+molto meno costose, per riuscire a compensare una eccessiva domanda di
+energia i paesi in cui la domanda è molto alta devono inevitabilmente
+farne affidamento.
+
+# Quali sono i paesi che fanno maggiormente affidamento ai combustibili fossili?
+
+```{r, include=TRUE}
+
+world <- ne_countries(scale = "medium", returnclass = "sf")
+
+primaryFossilConsumption <- primaryEnergyConsumption %>% 
+  select(Entity, Year, Fossil.fuels....sub.energy.) %>% 
+  filter(Entity != "Africa" | Entity != "World" | Entity != "Europe" | 
+           Entity != "Norh America" )
+
+primaryFossilConsumption <- primaryFossilConsumption %>% 
+  mutate(Iso3 = countrycode::countrycode(
+    sourcevar = Entity,
+    origin = "country.name",
+    destination = "iso3c"
+  )) %>% filter(!is.na(Fossil.fuels....sub.energy.))
+  
+
+
+primaryFossilConsumption <- world %>% 
+  select(geometry, name, iso_a3) %>% 
+  left_join(primaryFossilConsumption, by = c("iso_a3" = "Iso3"))
+
+consumptionAnim = plot_geo(primaryFossilConsumption,
+                           locationmode = 'World',
+                           frame = ~Year) %>% 
+  add_trace(locations = ~iso_a3,
+            z = ~Fossil.fuels....sub.energy.,
+            zmin = 0,
+            zmax = 100,
+            colorscale = 'Electric') %>% 
+  layout(title = "Consumo di combustibili fossili") %>% 
+  colorbar(title = "Legenda")
+
+consumptionAnim
+
+```
+
+L'animazione ci illustra come sono cambiati i consumi di carboni fossili
+in un periodo compreso tra il 1965 e il 2019. Notiamo sicuramente un
+**miglioramento**: lo sviluppo tecnologico dell'industria delle energie
+rinnovabili ha permesso una diversificazione nella produzione di energia ma 
+pochi sono i paesi che hanno ottenuto l'*indipendenza energetica totale*
+dai combustibili fossili.
+
+# Diversificazione delle risorse per la produzione dell'energia
+
+```{r, include=TRUE}
+
+shareWorldElecCons = shareElecCons %>%
+  mutate(FossilShare = Oil....sub.energy. + Gas....sub.energy. + Coal....sub.energy.,
+         RenewablesShare = Wind....sub.energy. + Solar....sub.energy. + 
+           Hydro....sub.energy.) %>%
+  rename(NuclearShare = Nuclear....sub.energy.)%>%
+  filter(Entity == "World") %>%
+  pivot_longer(!Year & !Entity & !Code, names_to = "Source", 
+               values_to="Share")
+
+shareWorldElecCons = shareWorldElecCons %>% 
+  filter(Source != "Oil....sub.energy." & Source != "Gas....sub.energy." 
+         & Source != "Coal....sub.energy." & Source != "Wind....sub.energy." 
+         & Source != "Solar....sub.energy." & Source != "Hydro....sub.energy." 
+         & Source != "Other.renewables....sub.energy.")
+
+plot_ly(
+  data = shareWorldElecCons,
+  x = ~Source,
+  y = ~Share,
+  type = "bar",
+  frame = ~Year,
+  color = ~Source
+  
+) %>% 
+  layout(
+    title = "Principali risorse di energia nel mondo",
+    showlegend = FALSE
+  )
+
+```
+
+Il grafico animato ci mostra come, a partire dal 1965, non ci siano stati 
+cambiamenti sostanziali: le fonti di energia rinnovabili non sono mai riuscite
+a garantire una produzione di energia di massa, aspetto legato probabilmente
+al costo eccessivamente elevato degli impianti di produzione. 
+
+Inoltre un secondo fattore determinante potrebbe essere la mancanza di un 
+sistema di conservazione dell'energia prodotta nel momento in cui
+le condizioni sono favorevoli (giornate di sole, ventose). 
+
+Il nucleare ha raggiunto un livello di stagnamento spiegato a mio avviso dallo scetticismo dell'opinione pubblica.
+
+Ci soffermeremo di seguito sull'analisi del modello energetico di paesi
+come la Francia e la Svezia per capire in che modo sia possibile attuare
+una rivoluzione da questo punto di vista.
+
+# Paesi che adottano il nucleare
+
+Paesi in via di sviluppo economico e demografico come la **Cina**, l'**India** e
+la **Corea del Sud** hanno registrato un aumento nell'utilizzo del nucleare.
+Bisogna tenere conto inoltre che in questi paesi il costo della
+tecnologia nucleare risulta essere minore di paesi dell'occidente.
+
+```{r, include=TRUE}
+
+nuclearEnergyImp = energyData %>% 
+  select(country, nuclear_electricity, year) %>% 
+  filter(year >= 2000) %>% 
+  filter(country == "India" | country == "China" | country == "South Korea")
+
+plot_ly(
+  
+  data = nuclearEnergyImp,
+  x = ~country,
+  y = ~nuclear_electricity, 
+  type = "bar",
+  frame = ~year,
+  showlegend = FALSE,
+  color = ~country
+  
+) %>% 
+  layout(
+    title = "Consumo di energia nucleare",
+    xaxis = list(title = "Nazione"),
+    yaxis = list(title = "TWh")
+  )
+
+```
+
+# Paesi che limitano il nucleare
+
+Tra i paesi che invece hanno abbassato le percentuali di consumo
+primario di energia nucleare troviamo molti esempi europei come
+**Germania**, **Regno Unito** e **Italia**. 
+Nel seguente grafico noteremo invececome l'opinione pubblica influisca 
+enormemente in questo settore: è il caso del **Giappone** che in seguito al 
+disastro di Fukushima-Daichii ha quasi interamente annullato l'energia nucleare 
+dal priprio arsenale.
+
+```{r, include=TRUE}
+
+nuclearEnergyDeg = energyData %>% 
+  select(country, nuclear_electricity, year) %>% 
+  filter(year >= 2000) %>% 
+  filter(country == "Germany" | country == "Japan" | country == "United Kingdom")
+
+plot_ly(
+  
+  data = nuclearEnergyDeg,
+  x = ~country,
+  y = ~nuclear_electricity, 
+  type = "bar",
+  frame = ~year,
+  showlegend = FALSE,
+  color = ~country
+  
+) %>% 
+  layout(
+    title = "Consumo di energia nucleare",
+    xaxis = list(title = "Nazione"),
+    yaxis = list(title = "TWh")
+  )
+
+```
+
+
+# Esempi di trionfi a scapito dei combustibili fossili
+
+Dalle precedenti analisi abbiamo notato due paesi europei che si sono 
+particolarmente distinti nell'impegno a limitare l'utilizzo dei combustibili 
+fossili:
+
+```{r, include=TRUE}
+
+France = shareElecCons %>%
+  mutate(FossilShare = Oil....sub.energy. + Gas....sub.energy. + Coal....sub.energy.,
+         RenewablesShare = Wind....sub.energy. + Solar....sub.energy. + 
+           Hydro....sub.energy.) %>%
+  rename(NuclearShare = Nuclear....sub.energy.)%>%
+  filter(Entity == "France") %>%
+  pivot_longer(!Year & !Entity & !Code, names_to = "Source", 
+               values_to="Share") %>% 
+  filter(Source != "Oil....sub.energy." & Source != "Gas....sub.energy." 
+         & Source != "Coal....sub.energy." & Source != "Wind....sub.energy." 
+         & Source != "Solar....sub.energy." & Source != "Hydro....sub.energy." 
+         & Source != "Other.renewables....sub.energy.") %>% 
+  filter(Year == 2019)
+
+Sweden = shareElecCons %>%
+  mutate(FossilShare = Oil....sub.energy. + Gas....sub.energy. + Coal....sub.energy.,
+         RenewablesShare = Wind....sub.energy. + Solar....sub.energy. + 
+           Hydro....sub.energy.) %>%
+  rename(NuclearShare = Nuclear....sub.energy.)%>%
+  filter(Entity == "Sweden") %>%
+  pivot_longer(!Year & !Entity & !Code, names_to = "Source", 
+               values_to="Share") %>% 
+  filter(Source != "Oil....sub.energy." & Source != "Gas....sub.energy." 
+         & Source != "Coal....sub.energy." & Source != "Wind....sub.energy." 
+         & Source != "Solar....sub.energy." & Source != "Hydro....sub.energy." 
+         & Source != "Other.renewables....sub.energy.") %>% 
+  filter(Year == 2019)
+
+
+FranceSweden = plot_ly() %>% 
+  add_pie(
+    data = Sweden,
+    labels = ~Source,
+    values = ~Share,
+    title = "Svezia",
+    domain = list(row = 0, column = 0)
+  ) %>% 
+  add_pie(
+    data = France,
+    labels = ~Source,
+    values = ~Share,
+    title = "France",
+    domain = list(row = 0, column = 1)
+  ) %>% 
+  layout(
+    grid = list(rows = 1, columns = 2),
+    title = "Consumo di energia primario",
+    xaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE),
+    yaxis = list(showgrid = FALSE, zeroline = FALSE, showticklabels = FALSE)
+    
+  )
+  
+
+FranceSweden
+
+
+```
+
+Le informazioni estrapolate hanno dell'incredibile: 
+* da un lato abbiamo la Svezia con le energie rinnovabili che prevalgono sulle controparti (la Svezia sfrutta in modo ideale i bacini idrici che ha la fortuna
+di avere sul suo territorio);
+* dall'altro lato la Francia ha limitato i combustibili fossili con il nucleare
+in attesa, probabilmente, di un salto di qualità delle tecnologie sostenibili.
+
+# Il nucleare è davvero pericoloso come si pensa?
+
+La nostra percezione della sicurezza dell'energia nucleare è fortemente
+influenzata da due incidenti in particolare: Chernobyl nel 1986 e Fukushima nel 
+2011.
+
+Sicuramente si tratta di eventi catastrofici, tuttavia il numero di vittime
+dei due incidenti ([link ad un articolo che approfondisce l'argomento](https://ourworldindata.org/what-was-the-death-toll-from-chernobyl-and-fukushima)) non può essere minimante comparato al numero di persone che 
+perdono la vita ogni anno per l'eccessivo inquinamento dell'aria.
+
+Grazie ad uno studio effettuato da Hannah Ritchie e Max Roser siamo in grado di quantificare il numero di vittime per risorsa di energia:
+
+```{r, include=TRUE}
+
+deathRates <- read.csv("death-rates-from-energy-production-per-twh.csv")
+
+plot_ly(
+  data = deathRates,
+  x = ~Entity,
+  y = ~Deaths.per.TWh.of.electricity.production, 
+  type = "bar",
+  color = ~Entity,
+  showlegend = FALSE
+) %>% 
+  layout(
+    yaxis = list(title = "TWh"),
+    xaxis = list(title = "Risorsa")
+  )
+
+
+```
+
+Ne concludiamo che di fronte a noi abbiamo la possibilità di cambiare concretamente le cose: una transione a fonti di energia rinnovabili e al nucleare sembra essere non solo la mossa vincente, ma anche una delle uniche opzioni a nostra disposizione.
